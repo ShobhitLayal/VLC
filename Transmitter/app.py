@@ -13,7 +13,6 @@
 
 import html
 import time
-
 import plotly.graph_objects as go
 import serial
 import serial.tools.list_ports
