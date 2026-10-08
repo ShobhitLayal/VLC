@@ -1,43 +1,48 @@
+
+App · PY
 # ================================================================
 # VLC TRANSMITTER — signal-lamp dashboard
 # ================================================================
 # Sends text as Morse pulses of light through an ESP/Arduino over USB
 # serial, with a live virtual lamp and a waveform of the pulse train.
 #
-#   pip install streamlit pyserial plotly
+#   pip install -U streamlit pyserial plotly
 #   streamlit run app.py
 #
 # Optional: put .streamlit/config.toml next to this file so widgets
 # (toggle, slider, tabs) pick up the amber theme.
 # ================================================================
-
+ 
 import html
 import time
+ 
 import plotly.graph_objects as go
 import serial
 import serial.tools.list_ports
 import streamlit as st
-
+ 
 st.set_page_config(
     page_title="VLC Transmitter",
     page_icon="🔦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
+ 
 # ---------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------
-
+ 
 LAMP = "#FFB431"
 LAMP_DIM = "rgba(255,180,49,0.10)"
 GRID = "#252F4A"
 MUTED = "#8F98AE"
-
+ 
 DEFAULT_BAUD = 115200
 DEFAULT_UNIT_MS = 100
+SYNC_ON_UNITS = 9    # long pulse that opens every message (the receiver
+SYNC_OFF_UNITS = 3   # measures it to learn the speed)
 MAX_LABELLED_LETTERS = 30  # letter labels on the waveform get crowded beyond this
-
+ 
 MORSE_DICT = {
     "A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.",
     "G": "--.", "H": "....", "I": "..", "J": ".---", "K": "-.-", "L": ".-..",
@@ -47,11 +52,11 @@ MORSE_DICT = {
     "0": "-----", "1": ".----", "2": "..---", "3": "...--", "4": "....-",
     "5": ".....", "6": "-....", "7": "--...", "8": "---..", "9": "----.",
 }
-
+ 
 # ---------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------
-
+ 
 DEFAULT_STATE = {
     "waveform": None,
     "transmission_complete": False,
@@ -64,16 +69,16 @@ DEFAULT_STATE = {
 }
 for _key, _value in DEFAULT_STATE.items():
     st.session_state.setdefault(_key, _value)
-
+ 
 # ---------------------------------------------------------------
 # Styling
 # ---------------------------------------------------------------
-
+ 
 st.markdown(
     """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap');
-
+ 
 :root {
     --bg: #10172A;
     --sidebar: #0C1222;
@@ -85,25 +90,25 @@ st.markdown(
     --ok: #63D6A9;
     --bad: #FF7B7B;
 }
-
+ 
 html, body, [class*="css"] {
     font-family: 'Instrument Sans', -apple-system, 'Segoe UI', sans-serif;
 }
 .stApp { background: var(--bg); color: var(--text); }
 .block-container { max-width: 1320px; padding-top: 2rem; padding-bottom: 3rem; }
 #MainMenu, footer { visibility: hidden; }
-
+ 
 section[data-testid="stSidebar"] {
     background: var(--sidebar);
     border-right: 1px solid var(--line);
 }
-
+ 
 h3, h4 {
     font-family: 'Bricolage Grotesque', 'Instrument Sans', sans-serif !important;
     letter-spacing: -0.01em;
     color: var(--text);
 }
-
+ 
 /* ---------- header ---------- */
 .app-title {
     font-family: 'Bricolage Grotesque', sans-serif;
@@ -111,7 +116,7 @@ h3, h4 {
     line-height: 1.05; color: var(--text);
 }
 .app-subtitle { color: var(--muted); font-size: 15px; margin-top: 6px; }
-
+ 
 /* ---------- status pills ---------- */
 .pill {
     display: inline-flex; align-items: center; gap: 8px;
@@ -125,7 +130,7 @@ h3, h4 {
 .pill.ok   { color: var(--ok);   background: rgba(99,214,169,.09);  border-color: rgba(99,214,169,.28); }
 .pill.warn { color: var(--lamp); background: rgba(255,180,49,.09);  border-color: rgba(255,180,49,.30); }
 .pill.bad  { color: var(--bad);  background: rgba(255,123,123,.09); border-color: rgba(255,123,123,.28); }
-
+ 
 /* ---------- stat strip ---------- */
 .stats {
     display: grid; grid-template-columns: repeat(4, 1fr);
@@ -144,14 +149,14 @@ h3, h4 {
     .stat:nth-child(2) { border-right: 0; }
     .stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
 }
-
+ 
 /* ---------- panels (st.container(border=True)) ---------- */
 div[data-testid="stVerticalBlockBorderWrapper"] {
     background: var(--panel);
     border-color: var(--line) !important;
     border-radius: 16px;
 }
-
+ 
 /* ---------- signal lamp ---------- */
 .lamp-stage {
     display: flex; flex-direction: column; align-items: center;
@@ -185,7 +190,7 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
     font-size: 18px; font-weight: 500; color: var(--text);
 }
 .status-row { display: flex; justify-content: center; margin: 6px 0 10px; min-height: 34px; }
-
+ 
 /* ---------- morse console ---------- */
 .morse-console {
     background: var(--sidebar); border: 1px solid var(--line);
@@ -203,7 +208,7 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 .ml.done { color: var(--lamp); }
 .ml.now  { background: var(--lamp); color: #1A1204; }
 .ws { color: #55617F; margin: 0 .5em 0 -.1em; }
-
+ 
 /* ---------- inputs & buttons ---------- */
 div[data-baseweb="input"] > div {
     background: var(--panel) !important;
@@ -212,7 +217,7 @@ div[data-baseweb="input"] > div {
 }
 div[data-baseweb="input"]:focus-within > div { border-color: var(--lamp) !important; }
 div[data-baseweb="input"] input { font-size: 18px !important; padding: 12px 14px !important; }
-
+ 
 .stButton > button {
     min-height: 48px; border-radius: 12px; font-weight: 600;
     border: 1px solid var(--line); background: transparent; color: var(--text);
@@ -227,9 +232,9 @@ div[data-baseweb="input"] input { font-size: 18px !important; padding: 12px 14px
     filter: brightness(1.08); color: #1A1204;
 }
 .stButton > button:disabled { opacity: .4; }
-
+ 
 div[data-testid="stProgress"] div[role="progressbar"] > div { background: var(--lamp); }
-
+ 
 /* ---------- timing table ---------- */
 .stMarkdown table { width: 100%; }
 .stMarkdown th { color: var(--muted); font-weight: 500; }
@@ -237,24 +242,24 @@ div[data-testid="stProgress"] div[role="progressbar"] > div { background: var(--
 """,
     unsafe_allow_html=True,
 )
-
-
+ 
+ 
 def flat(markup):
     """Strip indentation so Markdown never treats HTML as a code block."""
     return "".join(line.strip() for line in markup.splitlines())
-
-
+ 
+ 
 # ---------------------------------------------------------------
 # Serial / hardware
 # ---------------------------------------------------------------
-
+ 
 def get_available_ports():
     try:
         return [port.device for port in serial.tools.list_ports.comports()]
     except Exception:
         return []
-
-
+ 
+ 
 def close_serial_connection():
     connection = st.session_state.get("serial_connection")
     if connection is not None:
@@ -265,8 +270,8 @@ def close_serial_connection():
             pass
     st.session_state.serial_connection = None
     st.session_state.serial_config = None
-
-
+ 
+ 
 def get_serial_connection(port, baud_rate):
     """
     Reuse one persistent connection so the ESP/Arduino does not reset on
@@ -274,19 +279,19 @@ def get_serial_connection(port, baud_rate):
     """
     if not port:
         raise serial.SerialException("No serial port selected.")
-
+ 
     requested = (port, baud_rate)
     connection = st.session_state.get("serial_connection")
-
+ 
     if (
         connection is not None
         and st.session_state.get("serial_config") == requested
         and connection.is_open
     ):
         return connection
-
+ 
     close_serial_connection()
-
+ 
     try:
         connection = serial.Serial(
             port=port, baudrate=baud_rate, timeout=1, write_timeout=1
@@ -294,16 +299,16 @@ def get_serial_connection(port, baud_rate):
         time.sleep(1.5)  # many boards reset when the port opens
         connection.reset_input_buffer()
         connection.reset_output_buffer()
-
+ 
         st.session_state.serial_connection = connection
         st.session_state.serial_config = requested
         return connection
-
+ 
     except (serial.SerialException, OSError) as exc:
         close_serial_connection()
         raise serial.SerialException(str(exc))
-
-
+ 
+ 
 def send_serial_payload(port, baud_rate, payload):
     """Returns (True, None) on success or (False, error_message)."""
     try:
@@ -319,38 +324,47 @@ def send_serial_payload(port, baud_rate, payload):
     except Exception as exc:
         close_serial_connection()
         return False, str(exc)
-
-
+ 
+ 
 # ---------------------------------------------------------------
 # Morse / timing
 # ---------------------------------------------------------------
-
+ 
 def normalise_message(message):
     return " ".join(message.upper().strip().split())
-
-
+ 
+ 
 def unsupported_characters(message):
     return sorted({c for c in message if c != " " and c not in MORSE_DICT})
-
-
+ 
+ 
 def build_transmission_events(message, unit_time):
     """
-    Text -> timed optical events. Timing (in units):
+    Text -> timed optical events. Every message opens with a sync pulse
+    (9 units on, 3 off) so the receiver can learn the speed. Timing (units):
         dot 1 ON | dash 3 ON | symbol gap 1 OFF
         letter gap 2 OFF | word gap 6 OFF
     Each event: state (1/0), duration (s), label, letter (index), char.
     """
-    events = []
-    letter_no = -1
     words = [w for w in message.split() if any(c in MORSE_DICT for c in w)]
-
+    if not words:
+        return []
+ 
+    events = [
+        {"state": 1, "duration": unit_time * SYNC_ON_UNITS,
+         "label": "Sync pulse", "letter": -1, "char": ""},
+        {"state": 0, "duration": unit_time * SYNC_OFF_UNITS,
+         "label": "Sync gap", "letter": -1},
+    ]
+    letter_no = -1
+ 
     for word_index, word in enumerate(words):
         letters = [c for c in word if c in MORSE_DICT]
-
+ 
         for letter_index, char in enumerate(letters):
             letter_no += 1
             code = MORSE_DICT[char]
-
+ 
             for symbol_index, symbol in enumerate(code):
                 is_dot = symbol == "."
                 events.append({
@@ -365,30 +379,30 @@ def build_transmission_events(message, unit_time):
                         "state": 0, "duration": unit_time,
                         "label": "Symbol gap", "letter": letter_no,
                     })
-
+ 
             if letter_index < len(letters) - 1:
                 events.append({
                     "state": 0, "duration": unit_time * 2,
                     "label": "Letter gap", "letter": letter_no,
                 })
-
+ 
         if word_index < len(words) - 1 and letter_no >= 0:
             events.append({
                 "state": 0, "duration": unit_time * 6,
                 "label": "Word gap", "letter": letter_no,
             })
-
+ 
     return events
-
-
+ 
+ 
 def total_duration(events):
     return sum(e["duration"] for e in events)
-
-
+ 
+ 
 def count_morse_symbols(message):
     return sum(len(MORSE_DICT[c]) for c in message if c in MORSE_DICT)
-
-
+ 
+ 
 def morse_html(message, current=-1):
     """
     Morse console. Letters before `current` are lit, `current` is
@@ -400,7 +414,7 @@ def morse_html(message, current=-1):
             "Type a message above and its Morse code appears here."
             "</div>"
         )
-
+ 
     words_html, index = [], 0
     for word in message.split():
         letters = []
@@ -421,42 +435,42 @@ def morse_html(message, current=-1):
                 index += 1
         if letters:
             words_html.append("".join(letters))
-
+ 
     return (
         '<div class="morse-console">'
         + '<span class="ws">/</span>'.join(words_html)
         + "</div>"
     )
-
-
+ 
+ 
 # ---------------------------------------------------------------
 # Waveform
 # ---------------------------------------------------------------
-
+ 
 def generate_waveform(events):
     """Step-plot arrays plus the (char, start, end) span of each letter."""
     times, signal = [0.0], [0]
     now = 0.0
     spans = {}
-
+ 
     for e in events:
         times.append(now)
         signal.append(e["state"])
-        if e["state"]:
+        if e["state"] and e["letter"] >= 0:
             span = spans.setdefault(e["letter"], [e["char"], now, now])
             span[2] = now + e["duration"]
         now += e["duration"]
         times.append(now)
         signal.append(e["state"])
-
+ 
     if signal[-1] != 0:
         times.append(now)
         signal.append(0)
-
+ 
     letters = [tuple(v) for _, v in sorted(spans.items())]
     return times, signal, now, letters
-
-
+ 
+ 
 def create_waveform_figure(times, signal, duration, letters):
     fig = go.Figure(
         go.Scatter(
@@ -466,14 +480,14 @@ def create_waveform_figure(times, signal, duration, letters):
             hovertemplate="%{x:.3f} s<extra></extra>",
         )
     )
-
+ 
     if len(letters) <= MAX_LABELLED_LETTERS:
         for char, start, end in letters:
             fig.add_annotation(
                 x=(start + end) / 2, y=1.14, text=char, showarrow=False,
                 font=dict(color=MUTED, size=13),
             )
-
+ 
     fig.update_layout(
         height=320,
         paper_bgcolor="rgba(0,0,0,0)",
@@ -492,20 +506,20 @@ def create_waveform_figure(times, signal, duration, letters):
         ),
     )
     return fig
-
-
+ 
+ 
 # ---------------------------------------------------------------
 # Lamp & status widgets
 # ---------------------------------------------------------------
-
+ 
 def pill(text, kind="ok"):
     return f'<span class="pill {kind}">{html.escape(text)}</span>'
-
-
+ 
+ 
 def status_html(text, kind="ok"):
     return flat(f'<div class="status-row">{pill(text, kind)}</div>')
-
-
+ 
+ 
 def lamp_html(active=False, caption="Ready"):
     return flat(
         f"""
@@ -517,8 +531,8 @@ def lamp_html(active=False, caption="Ready"):
         </div>
         """
     )
-
-
+ 
+ 
 def run_live_visualisation(events, lamp_ph, status_ph, progress_ph, morse_ph, message):
     """
     Play the pulse train in real time. Deadlines are absolute so time
@@ -528,40 +542,40 @@ def run_live_visualisation(events, lamp_ph, status_ph, progress_ph, morse_ph, me
     elapsed = 0.0
     deadline = time.perf_counter()
     shown_letter = None
-
+ 
     for e in events:
         if e["letter"] != shown_letter:
             shown_letter = e["letter"]
             morse_ph.markdown(morse_html(message, shown_letter), unsafe_allow_html=True)
-
+ 
         lamp_ph.markdown(lamp_html(bool(e["state"]), e["label"]), unsafe_allow_html=True)
         status_ph.markdown(
             status_html("Transmitting" if e["state"] else "Waiting", "ok" if e["state"] else "warn"),
             unsafe_allow_html=True,
         )
-
+ 
         deadline += e["duration"]
         time.sleep(max(0.0, deadline - time.perf_counter()))
-
+ 
         elapsed += e["duration"]
         progress_ph.progress(min(elapsed / total, 1.0) if total > 0 else 1.0)
-
+ 
     lamp_ph.markdown(lamp_html(False, "Transmission complete"), unsafe_allow_html=True)
     status_ph.markdown(status_html("Complete", "ok"), unsafe_allow_html=True)
     morse_ph.markdown(morse_html(message, 10**6), unsafe_allow_html=True)
     progress_ph.progress(1.0)
-
-
+ 
+ 
 # ---------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------
-
+ 
 with st.sidebar:
     st.markdown("### Connection")
-
+ 
     available_ports = get_available_ports()
     hardware_detected = bool(available_ports)
-
+ 
     if hardware_detected:
         selected_port = st.selectbox(
             "Serial port", available_ports,
@@ -572,31 +586,31 @@ with st.sidebar:
         selected_port = None
         st.markdown(pill("No device found", "bad"), unsafe_allow_html=True)
         st.caption("Plug in the board, then refresh.")
-
-    st.button("Refresh ports", use_container_width=True)
-
+ 
+    st.button("Refresh ports", width="stretch")
+ 
     baud_options = [9600, 19200, 38400, 57600, 115200]
     baud_rate = st.selectbox(
         "Baud rate", baud_options, index=baud_options.index(DEFAULT_BAUD),
         help="Must match the rate set in your microcontroller sketch.",
     )
-
+ 
     st.divider()
     st.markdown("### Signal")
-
+ 
     unit_time_ms = st.slider(
         "Time unit", min_value=20, max_value=500, value=DEFAULT_UNIT_MS,
         step=10, format="%d ms",
         help="A dot lasts 1 unit and a dash lasts 3. Lower is faster.",
     )
     unit_time = unit_time_ms / 1000.0
-
+ 
 # ---------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------
-
+ 
 head_left, head_right = st.columns([5, 1.6], vertical_alignment="center")
-
+ 
 with head_left:
     st.markdown(
         flat(
@@ -609,7 +623,7 @@ with head_left:
         ),
         unsafe_allow_html=True,
     )
-
+ 
 with head_right:
     header_pill = (
         pill("Device found", "ok") if hardware_detected else pill("No device", "bad")
@@ -617,19 +631,19 @@ with head_right:
     st.markdown(
         f'<div style="text-align:right">{header_pill}</div>', unsafe_allow_html=True
     )
-
+ 
 st.write("")
-
+ 
 # ---------------------------------------------------------------
 # Message input and derived values
 # ---------------------------------------------------------------
-
+ 
 message_input = st.text_input(
     "Message",
     placeholder="Type a message, for example: HELLO WORLD",
     label_visibility="collapsed",
 )
-
+ 
 clean_message = normalise_message(message_input)
 invalid_chars = unsupported_characters(clean_message)
 transmission_events = build_transmission_events(clean_message, unit_time)
@@ -637,14 +651,14 @@ estimated_duration = total_duration(transmission_events)
 symbol_count = count_morse_symbols(clean_message)
 can_send = bool(transmission_events)
 words_per_minute = 1.2 / unit_time  # "PARIS" standard = 50 units per word
-
+ 
 if invalid_chars:
     st.warning(
         "These characters can't be sent and will be skipped: "
         + " ".join(invalid_chars)
         + ". Use letters A–Z and digits 0–9."
     )
-
+ 
 st.markdown(
     flat(
         f"""
@@ -658,22 +672,22 @@ st.markdown(
     ),
     unsafe_allow_html=True,
 )
-
+ 
 # ---------------------------------------------------------------
 # Main body: lamp on the left, controls on the right
 # ---------------------------------------------------------------
-
+ 
 lamp_column, control_column = st.columns([0.9, 1.1], gap="large")
-
+ 
 calibration_active = st.session_state.calibration_toggle
-
+ 
 with lamp_column:
     with st.container(border=True):
         st.markdown("#### Lamp")
         lamp_placeholder = st.empty()
         status_placeholder = st.empty()
         progress_placeholder = st.empty()
-
+ 
         lamp_placeholder.markdown(
             lamp_html(
                 calibration_active,
@@ -687,51 +701,51 @@ with lamp_column:
             else status_html("Ready", "ok"),
             unsafe_allow_html=True,
         )
-
+ 
 with control_column:
     with st.container(border=True):
         st.markdown("#### Morse code")
         morse_placeholder = st.empty()
         morse_placeholder.markdown(morse_html(clean_message), unsafe_allow_html=True)
         st.caption("Each group is one letter. A slash separates words.")
-
+ 
         send_col, sim_col = st.columns(2)
         with send_col:
             transmit_button = st.button(
                 "Send to hardware",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not (hardware_detected and can_send),
                 help=None if hardware_detected else "Connect a device to enable sending.",
             )
         with sim_col:
             simulation_button = st.button(
                 "Preview on screen",
-                use_container_width=True,
+                width="stretch",
                 disabled=not can_send,
                 help="Plays the pulses on the virtual lamp only.",
             )
-
+ 
     with st.container(border=True):
         st.markdown("#### Alignment mode")
         st.caption(
             "Holds the physical LED on so you can aim the transmitter "
             "at the receiver. Turn it off before sending."
         )
-
+ 
         calibration_state = st.toggle(
             "Hold LED on",
             key="calibration_toggle",
             disabled=not hardware_detected,
         )
-
+ 
         # Send a command only when the toggle actually changes:
         # "[" = continuous on, "]" = back to normal.
         if calibration_state != st.session_state.last_calibration_state:
             command = "[" if calibration_state else "]"
             ok, error = send_serial_payload(selected_port, baud_rate, command)
             st.session_state.last_calibration_state = calibration_state
-
+ 
             if ok:
                 st.toast(
                     "LED held on." if calibration_state else "LED back to normal.",
@@ -739,11 +753,11 @@ with control_column:
                 )
             else:
                 st.error(f"Couldn't reach the device. {error}")
-
+ 
 # ---------------------------------------------------------------
 # Store waveform for the chart tab
 # ---------------------------------------------------------------
-
+ 
 if clean_message and can_send:
     w_time, w_signal, w_duration, w_letters = generate_waveform(transmission_events)
     st.session_state.waveform = {
@@ -753,11 +767,11 @@ if clean_message and can_send:
         "letters": w_letters,
         "message": clean_message,
     }
-
+ 
 # ---------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------
-
+ 
 if transmit_button:
     if calibration_state:
         st.warning("Turn off alignment mode before sending a message.")
@@ -768,7 +782,7 @@ if transmit_button:
         # "@<ms>\n" tells the ESP32 the time unit, then the message follows.
         payload = f"@{unit_time_ms}\n{clean_message}"
         ok, error = send_serial_payload(selected_port, baud_rate, payload)
-
+ 
         if ok:
             st.session_state.last_message = clean_message
             st.session_state.transmission_complete = False
@@ -784,7 +798,7 @@ if transmit_button:
                 "The message wasn't sent. The device may have been unplugged. "
                 f"Details: {error}"
             )
-
+ 
 if simulation_button and can_send:
     if calibration_state:
         st.info(
@@ -797,14 +811,14 @@ if simulation_button and can_send:
         progress_placeholder, morse_placeholder, clean_message,
     )
     st.session_state.transmission_complete = True
-
+ 
 # ---------------------------------------------------------------
 # Waveform and reference
 # ---------------------------------------------------------------
-
+ 
 st.write("")
 tab_wave, tab_ref = st.tabs(["Waveform", "Timing and protocol"])
-
+ 
 with tab_wave:
     stored = st.session_state.waveform
     if stored:
@@ -816,7 +830,6 @@ with tab_wave:
             create_waveform_figure(
                 stored["time"], stored["signal"], stored["duration"], stored["letters"]
             ),
-            use_container_width=True,
             config={
                 "displaylogo": False,
                 "scrollZoom": True,
@@ -825,10 +838,10 @@ with tab_wave:
         )
     else:
         st.info("Type a message to see its waveform here.")
-
+ 
 with tab_ref:
     ref_left, ref_right = st.columns(2, gap="large")
-
+ 
     with ref_left:
         st.markdown(
             f"""
@@ -839,19 +852,22 @@ with tab_ref:
 | Gap between symbols | 1 | {unit_time_ms} ms |
 | Gap between letters | 2 | {unit_time_ms * 2} ms |
 | Gap between words | 6 | {unit_time_ms * 6} ms |
+| Sync pulse (starts a message) | 9 on, 3 off | {unit_time_ms * 9} ms on, {unit_time_ms * 3} ms off |
 """
         )
-
+ 
     with ref_right:
         st.markdown(
             f"""
 **Serial link**
-
+ 
 - Port: `{selected_port or "none"}`
 - Baud rate: `{baud_rate}`
 - Speed: `@<ms>` and a newline, sent before every message
-- Message: uppercase text
+- Message: uppercase text, opened by a sync pulse
 - Alignment on: send `[`
 - Alignment off: send `]`
 """
         )
+ 
+Claude finished the response
