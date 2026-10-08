@@ -14,6 +14,12 @@
 // Timing matches the dashboard exactly (in units):
 //   dot 1 on | dash 3 on | gap between symbols 1 off
 //   gap between letters 2 off | gap between words 6 off
+//
+// Every message starts with a sync pulse: 9 units on, 3 units off.
+// The receiver measures it to learn the speed, so the two ends never
+// need to be set to the same time unit by hand. A sync is sent
+// whenever the link has been idle for more than 8 units.
+//
 // There is no trailing gap after the last letter, so the physical
 // pulse train has the same length as the dashboard's waveform.
 // ================================================================
@@ -28,6 +34,10 @@ const uint32_t BAUD_RATE = 115200;   // must match the dashboard
 const uint16_t UNIT_MS_DEFAULT = 100;
 const uint16_t UNIT_MS_MIN     = 20;
 const uint16_t UNIT_MS_MAX     = 500;
+
+const uint8_t SYNC_ON_UNITS   = 9;   // long pulse that opens a message
+const uint8_t SYNC_OFF_UNITS  = 3;
+const uint8_t SYNC_IDLE_UNITS = 8;   // idle longer than this -> new message
 
 // ---------------- Morse tables ----------------
 const char* const LETTERS[26] = {
@@ -51,6 +61,12 @@ uint32_t lastLetterEndMs = 0;      // when the last letter finished
 
 bool     readingUnit     = false;  // inside an "@<ms>" command
 uint32_t unitAccum       = 0;
+
+// ---------------- prototypes ----------------
+void handleByte(char c);
+void beginLetter();
+void sendSync();
+void sendCode(const char* code);
 
 // ================================================================
 
@@ -114,10 +130,10 @@ void handleByte(char c) {
   else if (c >= '0' && c <= '9') code = DIGITS[c - '0'];
 
   if (code != nullptr) {
-    waitForLetterGap();
+    beginLetter();
     sendCode(code);
-    haveLastLetter = true;
-    wordBreakNext  = false;
+    haveLastLetter  = true;
+    wordBreakNext   = false;
     lastLetterEndMs = millis();
   } else if (c == ' ' || c == '/') {
     if (haveLastLetter) wordBreakNext = true;
@@ -125,15 +141,31 @@ void handleByte(char c) {
   // everything else (newlines, punctuation) is ignored
 }
 
-// Wait out the gap since the previous letter: 2 units, or 6 after a
-// space. Measured from when that letter ended, so a message that
-// arrives later never gets extra delay.
-void waitForLetterGap() {
-  if (!haveLastLetter) return;
+// Called before every letter. Opens a new message with a sync pulse
+// after a long idle; otherwise waits out the gap since the previous
+// letter: 2 units, or 6 after a space. The gap is measured from when
+// that letter ended, so data that arrives late never gets extra delay.
+void beginLetter() {
+  uint32_t idle = millis() - lastLetterEndMs;
+  bool freshMessage =
+      !haveLastLetter || idle > (uint32_t)unitMs * SYNC_IDLE_UNITS;
+
+  if (freshMessage) {
+    sendSync();
+    return;
+  }
 
   uint32_t gap = (uint32_t)unitMs * (wordBreakNext ? 6 : 2);
-  uint32_t elapsed = millis() - lastLetterEndMs;
-  if (elapsed < gap) delay(gap - elapsed);
+  if (idle < gap) delay(gap - idle);
+}
+
+// Sync: 9 units on, 3 units off. The receiver recovers the time unit
+// from (on + off) / 12, which cancels any edge-detection offset.
+void sendSync() {
+  digitalWrite(LED_PIN, HIGH);
+  delay((uint32_t)unitMs * SYNC_ON_UNITS);
+  digitalWrite(LED_PIN, LOW);
+  delay((uint32_t)unitMs * SYNC_OFF_UNITS);
 }
 
 // Flash one letter: dot = 1 unit on, dash = 3 units on,
