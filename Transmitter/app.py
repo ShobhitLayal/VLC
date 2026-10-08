@@ -1,5 +1,4 @@
 
-App · PY
 # ================================================================
 # VLC TRANSMITTER — signal-lamp dashboard
 # ================================================================
@@ -869,5 +868,3 @@ with tab_ref:
 - Alignment off: send `]`
 """
         )
- 
-Claude finished the response
