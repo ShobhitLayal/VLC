@@ -16,6 +16,7 @@ import plotly.graph_objects as go
 import serial
 import serial.tools.list_ports
 import streamlit as st
+from PIL import Image
 
 st.set_page_config(
     page_title="VLC Receiver",
@@ -479,6 +480,26 @@ def trace_figure(trace):
     )
     return fig
 
+def render_received_image(hex_str):
+    """Unpacks a 256-character Hex string into a 16-shade grayscale image. Resilient to noise."""
+    try:
+        img = Image.new('L', (16, 16))
+        
+        for i, char in enumerate(hex_str[:256]):
+            x = i % 16
+            y = i // 16
+            
+            # Safely attempt to convert the character to a 0-15 shade
+            try:
+                shade = int(char, 16)
+            except ValueError:
+                shade = 0  # If the character is corrupted (like 'I' or '?'), render it as a black pixel
+                
+            img.putpixel((x, y), shade * 17)
+            
+        return img.resize((320, 320), Image.Resampling.NEAREST)
+    except Exception:
+        return None
 
 # ---------------------------------------------------------------
 # Sidebar
@@ -661,22 +682,40 @@ def live_view():
 
     with message_col:
         with st.container(border=True):
-            st.markdown("#### Received message")
-            st.markdown(terminal_html(s.log, s.listening), unsafe_allow_html=True)
-            if "?" in s.log:
-                st.caption("A red ? is a letter that could not be read.")
-
-            save_col, clear_col = st.columns(2)
-            with save_col:
-                st.download_button(
-                    "Save log", data=s.log, file_name="vlc_received.txt",
-                    mime="text/plain", width="stretch", disabled=not s.log, key="save_log",
-                )
-            with clear_col:
-                st.button(
-                    "Clear", width="stretch", on_click=clear_log,
-                    disabled=not s.log, key="clear_log",
-                )
+            tab_text, tab_img = st.tabs(["📝 Text Log", "🖼️ Image Viewer"])
+            
+            with tab_text:
+                st.markdown(terminal_html(s.log, s.listening), unsafe_allow_html=True)
+                if "?" in s.log:
+                    st.caption("A red ? is a letter that could not be read.")
+    
+                save_col, clear_col = st.columns(2)
+                with save_col:
+                    st.download_button(
+                        "Save log", data=s.log, file_name="vlc_received.txt",
+                        mime="text/plain", use_container_width=True, disabled=not s.log, key="save_log",
+                    )
+                with clear_col:
+                    st.button(
+                        "Clear", use_container_width=True, on_click=clear_log,
+                        disabled=not s.log, key="clear_log",
+                    )
+                    
+            with tab_img:
+                if "IMG " in s.log:
+                    hex_part = s.log.split("IMG ")[-1].replace(" ", "").replace("\n", "")
+                    
+                    if len(hex_part) >= 256: # <--- CHANGED TO 256
+                        img_preview = render_received_image(hex_part[:256]) # <--- CHANGED TO 256
+                        if img_preview:
+                            st.image(img_preview, caption="Reconstructed Grayscale Image", use_container_width=False)
+                        else:
+                            st.error("Signal degraded: Hex string corrupted during transmission.")
+                    else:
+                        st.progress(len(hex_part) / 256.0) # <--- CHANGED TO 256.0
+                        st.info(f"Receiving image data... ({len(hex_part)}/256 characters)")
+                else:
+                    st.info("Waiting for an image payload starting with 'IMG'...")
 
     with st.container(border=True):
         st.markdown("#### Signal trace")

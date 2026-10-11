@@ -2,7 +2,7 @@
 # ================================================================
 # VLC TRANSMITTER — signal-lamp dashboard
 # ================================================================
-# Sends text as Morse pulses of light through an ESP/Arduino over USB
+# Sends text/image as Morse pulses of light through an ESP/Arduino over USB
 # serial, with a live virtual lamp and a waveform of the pulse train.
 #
 #   pip install -U streamlit pyserial plotly
@@ -11,14 +11,14 @@
 # Optional: put .streamlit/config.toml next to this file so widgets
 # (toggle, slider, tabs) pick up the amber theme.
 # ================================================================
- 
 import html
 import time
- 
+
 import plotly.graph_objects as go
 import serial
 import serial.tools.list_ports
 import streamlit as st
+from PIL import Image # <--- ADD THIS
  
 st.set_page_config(
     page_title="VLC Transmitter",
@@ -328,7 +328,27 @@ def send_serial_payload(port, baud_rate, payload):
 # ---------------------------------------------------------------
 # Morse / timing
 # ---------------------------------------------------------------
- 
+def encode_image_payload(uploaded_file):
+    """Shrinks to 16x16 and maps 256 shades of gray to 16 Hex characters (0-F)."""
+    img = Image.open(uploaded_file).convert('L').resize((16, 16))
+    preview_img = Image.new('L', (16, 16))
+    
+    hex_payload = ""
+    for y in range(16):
+        for x in range(16):
+            pixel = img.getpixel((x, y)) # 0 to 255
+            
+            # Divide by 16 to get a value from 0 to 15 (cap 255 at 15)
+            shade = min(pixel // 16, 15)
+            hex_payload += f"{shade:X}"
+            
+            # Multiply by 17 to map 0-15 back to 0-255 for the accurate preview
+            preview_img.putpixel((x, y), shade * 17)
+            
+    scaled_preview = preview_img.resize((200, 200), Image.Resampling.NEAREST)
+    return f"IMG {hex_payload}", scaled_preview
+
+
 def normalise_message(message):
     return " ".join(message.upper().strip().split())
  
@@ -564,7 +584,7 @@ def run_live_visualisation(events, lamp_ph, status_ph, progress_ph, morse_ph, me
     morse_ph.markdown(morse_html(message, 10**6), unsafe_allow_html=True)
     progress_ph.progress(1.0)
  
- 
+
 # ---------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------
@@ -637,13 +657,31 @@ st.write("")
 # Message input and derived values
 # ---------------------------------------------------------------
  
-message_input = st.text_input(
-    "Message",
-    placeholder="Type a message, for example: HELLO WORLD",
-    label_visibility="collapsed",
-)
- 
-clean_message = normalise_message(message_input)
+
+tab_text, tab_image = st.tabs(["📝 Text Message", "🖼️ Image Transfer"])
+
+with tab_text:
+    text_input = st.text_input(
+        "Message",
+        placeholder="Type a message, for example: HELLO WORLD",
+        label_visibility="collapsed",
+    )
+    raw_payload = text_input
+
+with tab_image:
+    uploaded_file = st.file_uploader("Upload an image (will be compressed to 16x16 B&W)", type=["png", "jpg", "jpeg"])
+    if uploaded_file is not None:
+        raw_payload, preview = encode_image_payload(uploaded_file)
+        
+        # Display the processed B&W image preview
+        st.markdown("##### 🔍 Processed Preview")
+        st.image(preview, caption="Exactly what will be sent to the receiver")
+        st.caption(f"Encoded payload: `{raw_payload}`")
+    else:
+        if not text_input:
+            raw_payload = ""
+
+clean_message = normalise_message(raw_payload)
 invalid_chars = unsupported_characters(clean_message)
 transmission_events = build_transmission_events(clean_message, unit_time)
 estimated_duration = total_duration(transmission_events)
