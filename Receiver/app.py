@@ -480,26 +480,28 @@ def trace_figure(trace):
     )
     return fig
 
-def render_received_image(hex_str):
-    """Unpacks a 256-character Hex string into a 16-shade grayscale image. Resilient to noise."""
+def render_partial_image(hex_str):
+    """Renders the image live as pixels arrive. Missing pixels default to black."""
     try:
-        img = Image.new('L', (16, 16))
+        # Create a blank 16x16 black canvas
+        img = Image.new('L', (16, 16), color=0) 
         
-        for i, char in enumerate(hex_str[:256]):
+        # Draw whatever pixels have arrived so far
+        for i, char in enumerate(hex_str):
+            if i >= 256: 
+                break
             x = i % 16
             y = i // 16
-            
-            # Safely attempt to convert the character to a 0-15 shade
             try:
                 shade = int(char, 16)
+                img.putpixel((x, y), shade * 17)
             except ValueError:
-                shade = 0  # If the character is corrupted (like 'I' or '?'), render it as a black pixel
+                pass # Ignore noise during live render
                 
-            img.putpixel((x, y), shade * 17)
-            
         return img.resize((320, 320), Image.Resampling.NEAREST)
     except Exception:
         return None
+    
 
 # ---------------------------------------------------------------
 # Sidebar
@@ -703,19 +705,22 @@ def live_view():
                     
             with tab_img:
                 if "IMG " in s.log:
-                    hex_part = s.log.split("IMG ")[-1].replace(" ", "").replace("\n", "")
+                    # Extract the payload cleanly
+                    payload = s.log.split("IMG ")[-1].replace(" ", "").replace("\n", "")
                     
-                    if len(hex_part) >= 256: # <--- CHANGED TO 256
-                        img_preview = render_received_image(hex_part[:256]) # <--- CHANGED TO 256
-                        if img_preview:
-                            st.image(img_preview, caption="Reconstructed Grayscale Image", use_container_width=False)
-                        else:
-                            st.error("Signal degraded: Hex string corrupted during transmission.")
+                    # Live render whatever portion of the 256 characters we have
+                    live_img = render_partial_image(payload)
+                    
+                    if live_img:
+                        st.image(live_img, caption=f"Live Optical Stream... ({len(payload)}/256 Pixels)", use_container_width=False)
+                    
+                    # Handle the progress bar and completion states
+                    if len(payload) < 256:
+                        st.progress(len(payload) / 256.0)
                     else:
-                        st.progress(len(hex_part) / 256.0) # <--- CHANGED TO 256.0
-                        st.info(f"Receiving image data... ({len(hex_part)}/256 characters)")
+                        st.success("Image Transmission Complete!")
                 else:
-                    st.info("Waiting for an image payload starting with 'IMG'...")
+                    st.info("Waiting for an optical image payload starting with 'IMG'...")
 
     with st.container(border=True):
         st.markdown("#### Signal trace")
